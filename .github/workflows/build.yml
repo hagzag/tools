@@ -127,7 +127,7 @@ jobs:
             fi
           done
           # Node modules for semantic-release plugins
-          required_npm=(semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/github @semantic-release/gitlab)
+          required_npm=(semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/changelog @semantic-release/git @semantic-release/exec @semantic-release/github @semantic-release/gitlab)
           for m in "${required_npm[@]}"; do
             if ! jq -e --arg m "$m" '.packages[] | select(.name == $m)' sbom.spdx.json >/dev/null; then
               echo "::error::SBOM missing expected npm module: $m"
@@ -215,6 +215,9 @@ jobs:
           npm ls -g --depth=0 \
             @semantic-release/commit-analyzer \
             @semantic-release/release-notes-generator \
+            @semantic-release/changelog \
+            @semantic-release/git \
+            @semantic-release/exec \
             @semantic-release/github \
             @semantic-release/gitlab
 

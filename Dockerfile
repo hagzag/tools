@@ -87,6 +87,9 @@ RUN set -eux; \
       "semantic-release@${SEMANTIC_RELEASE_VERSION}" \
       @semantic-release/commit-analyzer \
       @semantic-release/release-notes-generator \
+      @semantic-release/changelog \
+      @semantic-release/git \
+      @semantic-release/exec \
       @semantic-release/github \
       @semantic-release/gitlab; \
     npm cache clean --force; \
@@ -95,7 +98,7 @@ RUN set -eux; \
 
 # --- OCI labels (populated further by workflow via --label) --------------
 LABEL org.opencontainers.image.source="https://github.com/hagzag/tools" \
-      org.opencontainers.image.description="Wolfi-based CI image: terraform, terragrunt, aws-cli v2, jq, semantic-release (+ github/gitlab plugins)" \
+      org.opencontainers.image.description="Wolfi-based CI image: terraform, terragrunt, aws-cli v2, jq, semantic-release (+ changelog/git/exec/github/gitlab plugins)" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="hagzag" \
       io.hagzag.tools.terraform="${TERRAFORM_VERSION}" \

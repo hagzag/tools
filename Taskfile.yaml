@@ -226,6 +226,9 @@ tasks:
         docker run --rm {{.IMAGE}}:latest npm ls -g --depth=0 \
           @semantic-release/commit-analyzer \
           @semantic-release/release-notes-generator \
+          @semantic-release/changelog \
+          @semantic-release/git \
+          @semantic-release/exec \
           @semantic-release/github \
           @semantic-release/gitlab
 
@@ -255,7 +258,7 @@ tasks:
           jq -e --arg p "$p" '.packages[] | select(.name|ascii_downcase|startswith($p))' sbom.spdx.json >/dev/null \
             || { echo "::error:: SBOM missing apk pkg: $p"; missing=1; }
         done
-        for m in semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/github @semantic-release/gitlab; do
+        for m in semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/changelog @semantic-release/git @semantic-release/exec @semantic-release/github @semantic-release/gitlab; do
           jq -e --arg m "$m" '.packages[] | select(.name==$m)' sbom.spdx.json >/dev/null \
             || { echo "::error:: SBOM missing npm pkg: $m"; missing=1; }
         done
