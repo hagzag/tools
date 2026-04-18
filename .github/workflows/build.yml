@@ -137,21 +137,25 @@ jobs:
           exit $missing
 
       # ---------------- Vulnerability scan --------------------------------
+      - name: Install Grype
+        if: github.event_name != 'pull_request'
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b /usr/local/bin
+
       - name: Scan image with Grype
         if: github.event_name != 'pull_request'
-        id: grype
-        uses: anchore/scan-action@v3
-        with:
-          image: ${{ steps.primary.outputs.ref }}
-          fail-build: true
-          severity-cutoff: high
-          output-format: sarif
+        run: |
+          grype "${{ steps.primary.outputs.ref }}" \
+            --fail-on high \
+            --config .grype.yaml \
+            -o sarif > grype.sarif
 
       - name: Upload Grype SARIF to code scanning
         if: always() && github.event_name != 'pull_request'
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: ${{ steps.grype.outputs.sarif }}
+          sarif_file: grype.sarif
           category: grype
 
       # ---------------- Signing & attestation -----------------------------
@@ -180,7 +184,7 @@ jobs:
           path: |
             sbom.spdx.json
             sbom.cdx.json
-            ${{ steps.grype.outputs.sarif }}
+            grype.sarif
           if-no-files-found: warn
 
   smoke:
