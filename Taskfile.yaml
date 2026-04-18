@@ -1,0 +1,320 @@
+# Taskfile for local builds of ghcr.io/hagzag/tools.
+#
+# Install Task: https://taskfile.dev/installation/
+#   brew install go-task/tap/go-task     # macOS
+#   go install github.com/go-task/task/v3/cmd/task@latest
+#
+# Usage:
+#   task            # show list
+#   task build      # single-arch local build (loads into docker)
+#   task smoke      # run smoke tests against the locally-built image
+#   task sbom       # generate SBOM (requires syft)
+#   task scan       # grype scan (requires grype)
+#   task sign       # cosign keyless sign a pushed image (needs OIDC env)
+#   task push       # push to ghcr.io (needs docker login)
+#   task all        # lint -> build -> smoke -> sbom -> scan
+version: "3"
+
+vars:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: hagzag/tools
+  # Pinned tool versions — must mirror .github/workflows/build.yml env.
+  TERRAFORM_VERSION: 1.14.8
+  TERRAGRUNT_VERSION: 1.0.1
+  SEMANTIC_RELEASE_VERSION: 24.2.3
+  # Derived tags
+  VERSION_TAG: tf{{.TERRAFORM_VERSION}}-tg{{.TERRAGRUNT_VERSION}}
+  SHA_TAG:
+    sh: git rev-parse --short HEAD 2>/dev/null || echo "dev"
+  IMAGE: "{{.REGISTRY}}/{{.IMAGE_NAME}}"
+  # Single-arch default for local iteration; override with PLATFORMS=linux/amd64,linux/arm64
+  PLATFORMS: '{{.PLATFORMS | default "linux/amd64"}}'
+
+env:
+  DOCKER_BUILDKIT: "1"
+
+tasks:
+  default:
+    desc: List available tasks
+    cmds:
+      - task --list
+
+  # ---------------------------------------------------------------------
+  # Install helpers
+  #
+  # Each install-* task is idempotent: a pre-existing binary short-
+  # circuits the task via `status:`. The OS is auto-detected; macOS
+  # prefers Homebrew, Linux prefers apt and falls back to release
+  # binaries. Docker itself is never auto-installed — users should
+  # install Docker Desktop / Colima / Rancher / podman-docker manually.
+  # ---------------------------------------------------------------------
+  install-tools:
+    desc: Install every optional dependency that's not already on PATH
+    cmds:
+      - task: install-syft
+      - task: install-grype
+      - task: install-cosign
+      - task: install-hadolint
+      - task: install-yamllint
+
+  install-syft:
+    desc: Install syft (SBOM generator) if missing
+    status:
+      - command -v syft
+    cmds:
+      - |
+        if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null; then
+          brew install syft
+        else
+          curl -sSfL https://raw.githubusercontent.com/anchore/syft/main/install.sh \
+            | sh -s -- -b "$HOME/.local/bin"
+        fi
+
+  install-grype:
+    desc: Install grype (vulnerability scanner) if missing
+    status:
+      - command -v grype
+    cmds:
+      - |
+        if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null; then
+          brew install grype
+        else
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b "$HOME/.local/bin"
+        fi
+
+  install-cosign:
+    desc: Install cosign (sigstore signing) if missing
+    status:
+      - command -v cosign
+    cmds:
+      - |
+        if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null; then
+          brew install cosign
+        else
+          arch=$(uname -m); case "$arch" in x86_64) a=amd64 ;; aarch64|arm64) a=arm64 ;; esac
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL -o "$HOME/.local/bin/cosign" \
+            "https://github.com/sigstore/cosign/releases/latest/download/cosign-linux-${a}"
+          chmod +x "$HOME/.local/bin/cosign"
+        fi
+
+  install-hadolint:
+    desc: Install hadolint (Dockerfile linter) if missing
+    status:
+      - command -v hadolint
+    cmds:
+      - |
+        if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null; then
+          brew install hadolint
+        else
+          arch=$(uname -m)
+          mkdir -p "$HOME/.local/bin"
+          curl -sSfL -o "$HOME/.local/bin/hadolint" \
+            "https://github.com/hadolint/hadolint/releases/latest/download/hadolint-Linux-${arch}"
+          chmod +x "$HOME/.local/bin/hadolint"
+        fi
+
+  install-yamllint:
+    desc: Install yamllint if missing
+    status:
+      - command -v yamllint
+    cmds:
+      - |
+        if [ "$(uname)" = "Darwin" ] && command -v brew >/dev/null; then
+          brew install yamllint
+        elif command -v pipx >/dev/null; then
+          pipx install yamllint
+        else
+          pip install --user yamllint
+        fi
+
+  # ---------------------------------------------------------------------
+  # Preflight
+  # ---------------------------------------------------------------------
+  check-tools:
+    desc: Verify Docker + buildx are available (Docker itself is NOT auto-installed)
+    silent: true
+    cmds:
+      - |
+        if ! command -v docker >/dev/null 2>&1; then
+          cat <<EOF
+        ERROR: docker is not installed.
+
+        Install one of the following and retry:
+          - macOS:  Docker Desktop  (https://www.docker.com/products/docker-desktop/)
+                    or Colima       (brew install colima docker && colima start)
+          - Linux:  https://docs.docker.com/engine/install/
+                    or Podman with podman-docker shim
+        EOF
+          exit 1
+        fi
+        if ! docker buildx version >/dev/null 2>&1; then
+          echo "ERROR: docker buildx plugin not available — update Docker or install buildx manually."
+          exit 1
+        fi
+
+  lint:
+    desc: Lint Dockerfile (hadolint) and workflow YAML (yamllint) — installs both if missing
+    deps: [install-hadolint, install-yamllint]
+    cmds:
+      - hadolint Dockerfile
+      - |
+        yamllint -d "{extends: relaxed, rules: {line-length: disable, truthy: {check-keys: false}}}" \
+          .github/workflows/ Taskfile.yaml .releaserc.yml
+
+  # ---------------------------------------------------------------------
+  # Build
+  # ---------------------------------------------------------------------
+  buildx-setup:
+    desc: Ensure a multi-arch buildx builder exists
+    status:
+      - docker buildx inspect hagzag-tools >/dev/null 2>&1
+    cmds:
+      - docker buildx create --name hagzag-tools --use --bootstrap
+
+  build:
+    desc: "Build single-arch image and load into local docker (tag: {{.VERSION_TAG}} + sha-{{.SHA_TAG}})"
+    deps: [check-tools]
+    cmds:
+      - |
+        docker buildx build \
+          --platform linux/amd64 \
+          --build-arg TERRAFORM_VERSION={{.TERRAFORM_VERSION}} \
+          --build-arg TERRAGRUNT_VERSION={{.TERRAGRUNT_VERSION}} \
+          --build-arg SEMANTIC_RELEASE_VERSION={{.SEMANTIC_RELEASE_VERSION}} \
+          -t {{.IMAGE}}:latest \
+          -t {{.IMAGE}}:{{.VERSION_TAG}} \
+          -t {{.IMAGE}}:sha-{{.SHA_TAG}} \
+          --load \
+          .
+
+  build-multiarch:
+    desc: Build linux/amd64 + linux/arm64 (does NOT load; use `task push` to publish)
+    deps: [check-tools, buildx-setup]
+    cmds:
+      - |
+        docker buildx build \
+          --platform linux/amd64,linux/arm64 \
+          --build-arg TERRAFORM_VERSION={{.TERRAFORM_VERSION}} \
+          --build-arg TERRAGRUNT_VERSION={{.TERRAGRUNT_VERSION}} \
+          --build-arg SEMANTIC_RELEASE_VERSION={{.SEMANTIC_RELEASE_VERSION}} \
+          -t {{.IMAGE}}:latest \
+          -t {{.IMAGE}}:{{.VERSION_TAG}} \
+          -t {{.IMAGE}}:sha-{{.SHA_TAG}} \
+          .
+
+  # ---------------------------------------------------------------------
+  # Runtime verification
+  # ---------------------------------------------------------------------
+  smoke:
+    desc: Exercise every tool inside the locally-built image
+    deps: [build]
+    cmds:
+      - echo "== terraform =="
+      - docker run --rm {{.IMAGE}}:latest terraform -version
+      - echo "== terragrunt =="
+      - docker run --rm {{.IMAGE}}:latest terragrunt --version
+      - echo "== aws =="
+      - docker run --rm {{.IMAGE}}:latest aws --version
+      - echo "== jq =="
+      - docker run --rm {{.IMAGE}}:latest jq --version
+      - echo "== semantic-release =="
+      - docker run --rm {{.IMAGE}}:latest semantic-release --version
+      - echo "== semantic-release plugins =="
+      - |
+        docker run --rm {{.IMAGE}}:latest npm ls -g --depth=0 \
+          @semantic-release/commit-analyzer \
+          @semantic-release/release-notes-generator \
+          @semantic-release/github \
+          @semantic-release/gitlab
+
+  # ---------------------------------------------------------------------
+  # Supply-chain artifacts
+  # ---------------------------------------------------------------------
+  sbom:
+    desc: Generate SBOM (SPDX + CycloneDX) for the locally-built image
+    deps: [build, install-syft]
+    cmds:
+      - |
+        syft {{.IMAGE}}:latest \
+          -o spdx-json=sbom.spdx.json \
+          -o cyclonedx-json=sbom.cdx.json
+      - echo "SBOM package count:"
+      - jq '.packages | length' sbom.spdx.json
+      - task: validate-sbom
+
+  validate-sbom:
+    desc: Assert SBOM lists the expected apk packages and npm plugins
+    internal: true
+    cmds:
+      - |
+        set -eu
+        missing=0
+        for p in aws-cli-2 jq nodejs-20 npm ca-certificates git bash; do
+          jq -e --arg p "$p" '.packages[] | select(.name|ascii_downcase|startswith($p))' sbom.spdx.json >/dev/null \
+            || { echo "::error:: SBOM missing apk pkg: $p"; missing=1; }
+        done
+        for m in semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/github @semantic-release/gitlab; do
+          jq -e --arg m "$m" '.packages[] | select(.name==$m)' sbom.spdx.json >/dev/null \
+            || { echo "::error:: SBOM missing npm pkg: $m"; missing=1; }
+        done
+        [ "$missing" = "0" ] && echo "SBOM content OK"
+        exit $missing
+
+  scan:
+    desc: Vulnerability scan with grype (fails on high+)
+    deps: [build, install-grype]
+    cmds:
+      - grype {{.IMAGE}}:latest --fail-on high --config .grype.yaml
+
+  # ---------------------------------------------------------------------
+  # Publish
+  # ---------------------------------------------------------------------
+  login:
+    desc: "docker login to ghcr.io (set env GHCR_USER, GHCR_PAT)"
+    silent: true
+    cmds:
+      - |
+        : "${GHCR_USER:?set GHCR_USER (your GitHub username)}"
+        : "${GHCR_PAT:?set GHCR_PAT (PAT with write:packages)}"
+        echo "$GHCR_PAT" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
+
+  push:
+    desc: Build multi-arch AND push to ghcr.io (runs `task login` implicitly if env set)
+    deps: [check-tools, buildx-setup]
+    cmds:
+      - |
+        docker buildx build \
+          --platform {{.PLATFORMS}} \
+          --build-arg TERRAFORM_VERSION={{.TERRAFORM_VERSION}} \
+          --build-arg TERRAGRUNT_VERSION={{.TERRAGRUNT_VERSION}} \
+          --build-arg SEMANTIC_RELEASE_VERSION={{.SEMANTIC_RELEASE_VERSION}} \
+          -t {{.IMAGE}}:latest \
+          -t {{.IMAGE}}:{{.VERSION_TAG}} \
+          -t {{.IMAGE}}:sha-{{.SHA_TAG}} \
+          --push \
+          .
+
+  sign:
+    desc: "cosign keyless sign a pushed image (needs sigstore OIDC session)"
+    deps: [install-cosign]
+    cmds:
+      - cosign sign --yes {{.IMAGE}}:{{.VERSION_TAG}}
+
+  # ---------------------------------------------------------------------
+  # Housekeeping
+  # ---------------------------------------------------------------------
+  clean:
+    desc: Remove local build artifacts (SBOMs, SARIFs)
+    cmds:
+      - rm -f sbom.spdx.json sbom.cdx.json grype.sarif
+
+  all:
+    desc: lint -> build -> smoke -> sbom -> scan
+    cmds:
+      - task: lint
+      - task: build
+      - task: smoke
+      - task: sbom
+      - task: scan

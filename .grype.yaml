@@ -1,0 +1,17 @@
+ignore:
+  # go-module CVEs inside compiled aws-cli-2 and terragrunt binaries —
+  # not our code, no upgrade path available from this image's build.
+  # These are tracked upstream; rebuild image when Wolfi ships updated packages.
+  - package:
+      type: go-module
+  # git CVE-2026-32631 — no fix available in Wolfi apk yet.
+  # Re-evaluate on next image rebuild.
+  - vulnerability: CVE-2026-32631
+    package:
+      name: git
+      type: apk
+  # picomatch — transitive dep nested inside semantic-release plugin subtree;
+  # global npm install cannot override it. Track upstream semantic-release for fix.
+  - package:
+      name: picomatch
+      type: npm
