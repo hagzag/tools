@@ -170,6 +170,7 @@ jobs:
 
       - name: Attest SBOM (SPDX)
         if: github.event_name != 'pull_request'
+        continue-on-error: true
         run: |
           cosign attest --yes \
             --predicate sbom.spdx.json \
