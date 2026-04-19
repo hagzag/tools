@@ -9,7 +9,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write # release
   packages: write
   id-token: write # cosign keyless signing (OIDC)
   security-events: write # grype SARIF upload
