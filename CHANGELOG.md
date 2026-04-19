@@ -1,3 +1,11 @@
+# [1.1.0](https://github.com/hagzag/tools/compare/v1.0.0...v1.1.0) (2026-04-19)
+
+
+### Features
+
+* add dependabot for docker and npm weekly updates ([cb7d723](https://github.com/hagzag/tools/commit/cb7d72387c6eba98d404d2fcc26c5fa8adf635db))
+* bump all GH Actions to node24-compatible versions ([16cb677](https://github.com/hagzag/tools/commit/16cb677f41763e89bada9a583df2ce7ec2a8d828))
+
 # 1.0.0 (2026-04-19)
 
 
