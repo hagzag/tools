@@ -11,11 +11,13 @@
 
 ## actions / workflow hygiene
 
-- [ ] update actions to node24-compatible versions (deadline: June 2026)
-  - `actions/checkout@v4` → v5 (when available)
-  - `docker/build-push-action@v6`
-  - `docker/login-action@v3`
-  - `docker/metadata-action@v5`
-  - `docker/setup-buildx-action@v3`
-  - `docker/setup-qemu-action@v3`
-  - `github/codeql-action/upload-sarif@v3` → v4 (deprecated dec 2026)
+- [x] update actions to node24-compatible versions
+  - `actions/checkout@v4` → v6
+  - `docker/build-push-action@v6` → v7
+  - `docker/login-action@v3` → v4
+  - `docker/metadata-action@v5` → v6
+  - `docker/setup-buildx-action@v3` → v4
+  - `docker/setup-qemu-action@v3` → v4
+  - `github/codeql-action/upload-sarif@v3` → v4
+  - `actions/upload-artifact@v4` → v7
+  - `sigstore/cosign-installer@v3` — kept (no v4 major tag yet)
