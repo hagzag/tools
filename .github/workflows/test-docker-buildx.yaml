@@ -23,7 +23,7 @@ jobs:
         with:
           repository: hagzag/github-actions
           path: github-actions
-          token: ${{ secrets.GITHUB_TOKEN }}
+          token: ${{ secrets.GH_TOKEN }}
 
       - name: Build Docker image with buildx (multi-arch dry-run)
         uses: ./github-actions/.github/actions/docker-buildx
