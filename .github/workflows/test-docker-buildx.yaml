@@ -28,15 +28,11 @@ jobs:
 
       - name: Verify action files exist
         run: |
-          echo "Current directory: $(pwd)"
-          echo "Contents of current directory:"
-          ls -la
+          echo "Checking github-actions/.github/actions/docker-buildx:"
+          ls -la github-actions/.github/actions/docker-buildx/ || echo "NOT FOUND"
           echo "---"
-          echo "Contents of github-actions:"
-          ls -la github-actions/ || echo "github-actions directory not found"
-          echo "---"
-          echo "Contents of .github/actions/docker-buildx:"
-          ls -la .github/actions/docker-buildx/ || echo "Local docker-buildx not found"
+          echo "Tree of github-actions/.github:"
+          find github-actions/.github -type f -name "action.yaml" -o -name "action.yml" 2>/dev/null || echo "No action files found"
 
       - name: Build Docker image with buildx (multi-arch dry-run)
         uses: ./github-actions/.github/actions/docker-buildx
