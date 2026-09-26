@@ -1,0 +1,38 @@
+---
+name: Test Docker Buildx Action
+
+on:
+  push:
+    branches: [test/docker-buildx-action]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image with buildx (multi-arch dry-run)
+        uses: hagzag/github-actions/.github/actions/docker-buildx@feat/add-agents-and-claude-docs
+        with:
+          image-name: ghcr.io/${{ github.repository }}
+          platforms: linux/amd64,linux/arm64
+          dockerfile: Dockerfile
+          build-context: .
+          push: false
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ github.sha }}
+            ghcr.io/${{ github.repository }}:latest
+
+      - name: Display build summary
+        run: |
+          echo "✅ Docker buildx test successful!"
+          echo "Image: ghcr.io/${{ github.repository }}"
+          echo "Platforms: linux/amd64, linux/arm64"
+          echo "Commit SHA: ${{ github.sha }}"
