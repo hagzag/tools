@@ -27,7 +27,16 @@ jobs:
           fetch-depth: 0
 
       - name: Verify action files exist
-        run: ls -la github-actions/.github/actions/docker-buildx/
+        run: |
+          echo "Current directory: $(pwd)"
+          echo "Contents of current directory:"
+          ls -la
+          echo "---"
+          echo "Contents of github-actions:"
+          ls -la github-actions/ || echo "github-actions directory not found"
+          echo "---"
+          echo "Contents of .github/actions/docker-buildx:"
+          ls -la .github/actions/docker-buildx/ || echo "Local docker-buildx not found"
 
       - name: Build Docker image with buildx (multi-arch dry-run)
         uses: ./github-actions/.github/actions/docker-buildx
