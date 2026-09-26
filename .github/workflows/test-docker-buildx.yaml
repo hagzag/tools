@@ -18,8 +18,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Check out github-actions (for private action)
+        uses: actions/checkout@v4
+        with:
+          repository: hagzag/github-actions
+          path: github-actions
+          token: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Build Docker image with buildx (multi-arch dry-run)
-        uses: hagzag/github-actions/.github/actions/docker-buildx@v1.0.0
+        uses: ./github-actions/.github/actions/docker-buildx
         with:
           image-name: ghcr.io/${{ github.repository }}
           platforms: linux/amd64,linux/arm64
