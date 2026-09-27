@@ -42,6 +42,10 @@ jobs:
           dockerfile: Dockerfile
           build-context: .
           push: false
+          build-args: |
+            TERRAFORM_VERSION=1.14.8
+            TERRAGRUNT_VERSION=1.0.1
+            SEMANTIC_RELEASE_VERSION=24.2.3
           tags: |
             ghcr.io/${{ github.repository }}:${{ github.sha }}
             ghcr.io/${{ github.repository }}:latest
