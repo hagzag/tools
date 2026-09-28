@@ -2,7 +2,7 @@ name: Build & publish tools image (using shared docker-buildx)
 
 on:
   push:
-    branches: [main, "feature/**", "fix/**"]
+    branches: [main, "feature/**", "fix/**", "test/**"]
     tags: ["v*.*.*"]
   pull_request:
     branches: [main]
