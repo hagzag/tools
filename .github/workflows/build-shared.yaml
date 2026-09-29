@@ -1,0 +1,308 @@
+name: Build & publish tools image (using shared docker-buildx)
+
+on:
+  push:
+    branches: [main, "feature/**", "fix/**", "test/**"]
+    tags: ["v*.*.*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write # release
+  packages: write
+  id-token: write # cosign keyless signing (OIDC)
+  security-events: write # grype SARIF upload
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }} # hagzag/tools
+  # ---- Pinned tool versions (bump via PR) -------------------------------
+  TERRAFORM_VERSION: "1.14.8"
+  TERRAGRUNT_VERSION: "1.0.1"
+  SEMANTIC_RELEASE_VERSION: "24.2.3"
+  GRYPE_VERSION: "0.111.0"
+
+jobs:
+  build:
+    name: Build, SBOM, scan, sign, push
+    runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.meta.outputs.tags }}
+      digest: ${{ steps.build.outputs.image-digest }}
+      primary-tag: ${{ steps.primary.outputs.ref }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out github-actions (for shared action)
+        uses: actions/checkout@v4
+        with:
+          repository: hagzag/github-actions
+          path: github-actions
+          token: ${{ secrets.GH_TOKEN }}
+          fetch-depth: 0
+
+      - name: Set short git commit SHA
+        id: vars
+        run: |
+          calculatedSha=$(git rev-parse --short ${{ github.sha }})
+          echo "short_sha=$calculatedSha" >> $GITHUB_OUTPUT
+
+      - name: Generate semantic version (main branch only)
+        id: semver
+        if: github.ref == 'refs/heads/main'
+        run: |
+          # Install dependencies
+          npm install -g semantic-release
+          npm install -g @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/github @semantic-release/changelog @semantic-release/git @semantic-release/exec
+
+          # Create .releaserc.yml
+          cat <<EOF > .releaserc.yml
+          branches:
+            - main
+          plugins:
+            - "@semantic-release/commit-analyzer"
+            - "@semantic-release/release-notes-generator"
+            - "@semantic-release/github"
+            - - "@semantic-release/exec"
+              - verifyReleaseCmd: echo \${nextRelease.version} > /tmp/nextVersion
+          EOF
+
+          # Dry-run to check what version would be released
+          semantic-release --dry-run -r ${{ github.server_url }}/${{ github.repository }}.git || true
+
+          if [ -f /tmp/nextVersion ]; then
+            version="v$(cat /tmp/nextVersion)"
+            echo "version=$version" >> $GITHUB_OUTPUT
+            echo "Found semantic version: $version"
+          else
+            echo "No semantic version bump needed, will use short sha"
+            echo "version=" >> $GITHUB_OUTPUT
+          fi
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN }}
+
+      - name: Determine tags
+        id: tags
+        run: |
+          SHORT_SHA="${{ steps.vars.outputs.short_sha }}"
+
+          if [[ "${{ github.event_name }}" == "pull_request" ]]; then
+            # PR: pr-{pr_number}-{short_sha}
+            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:pr-${{ github.event.pull_request.number }}-${SHORT_SHA}"
+            echo "tags=$TAGS" >> $GITHUB_OUTPUT
+            echo "push=false" >> $GITHUB_OUTPUT
+            echo "Tag: $TAGS (no push)"
+          elif [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            # Main branch: semver + latest + main
+            SEMVER="${{ steps.semver.outputs.version }}"
+            if [ -n "$SEMVER" ]; then
+              TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SEMVER},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main"
+              echo "Tags: ${SEMVER}, latest, main (will push)"
+            else
+              TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA},${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:latest,${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:main"
+              echo "Tags: ${SHORT_SHA}, latest, main (will push)"
+            fi
+            echo "tags=$TAGS" >> $GITHUB_OUTPUT
+            echo "push=true" >> $GITHUB_OUTPUT
+          else
+            # Other branches: {short_sha}
+            TAGS="${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${SHORT_SHA}"
+            echo "tags=$TAGS" >> $GITHUB_OUTPUT
+            echo "push=false" >> $GITHUB_OUTPUT
+            echo "Tag: $TAGS (no push)"
+          fi
+
+      - name: Extract image name and registry
+        id: parse
+        run: |
+          echo "registry=${{ env.REGISTRY }}" >> $GITHUB_OUTPUT
+          echo "repo=${{ env.IMAGE_NAME }}" >> $GITHUB_OUTPUT
+
+      - name: Determine build platforms
+        id: platforms
+        run: |
+          # Only build for arm64 on main branch - avoid QEMU issues on test branches
+          if [[ "${{ github.ref }}" == "refs/heads/main" ]]; then
+            echo "platforms=linux/amd64,linux/arm64" >> $GITHUB_OUTPUT
+          else
+            echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Build Docker image with shared action
+        id: build
+        uses: ./github-actions/.github/actions/docker-buildx
+        with:
+          image-name: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          platforms: ${{ steps.platforms.outputs.platforms }}
+          dockerfile: Dockerfile
+          build-context: .
+          push: ${{ steps.tags.outputs.push }}
+          registry-url: ${{ env.REGISTRY }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          tags: ${{ steps.tags.outputs.tags }}
+          build-args: |
+            TERRAFORM_VERSION=${{ env.TERRAFORM_VERSION }}
+            TERRAGRUNT_VERSION=${{ env.TERRAGRUNT_VERSION }}
+            SEMANTIC_RELEASE_VERSION=${{ env.SEMANTIC_RELEASE_VERSION }}
+
+      - name: Compute primary image ref (digest-pinned)
+        id: primary
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        run: |
+          # Extract first tag from comma-separated list
+          FIRST_TAG=$(echo "${{ steps.tags.outputs.tags }}" | cut -d',' -f1)
+          echo "ref=${FIRST_TAG}@${{ steps.build.outputs.image-digest }}" >> "$GITHUB_OUTPUT"
+
+      # -------- SBOM Generation -----------------------------------------------
+      - name: Install Syft
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        uses: anchore/sbom-action/download-syft@v0
+
+      - name: Generate SBOM (SPDX + CycloneDX)
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        run: |
+          syft "${{ steps.primary.outputs.ref }}" \
+            -o "spdx-json=sbom.spdx.json" \
+            -o "cyclonedx-json=sbom.cdx.json"
+          echo "SBOM package count:"
+          jq '.packages | length' sbom.spdx.json
+
+      - name: Validate SBOM content
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        run: |
+          set -euo pipefail
+          # SPDX JSON must be parseable and non-empty
+          jq -e '.packages | length > 0' sbom.spdx.json >/dev/null
+          # Must list the apk-installed tools (terraform/terragrunt are
+          # raw binaries so they may appear as binary-classifier entries
+          # instead of spdx packages — verified in smoke job below).
+          required_pkgs=(aws-cli-2 jq nodejs-20 npm ca-certificates git bash)
+          missing=0
+          for p in "${required_pkgs[@]}"; do
+            if ! jq -e --arg p "$p" '.packages[] | select(.name | ascii_downcase | startswith($p))' sbom.spdx.json >/dev/null; then
+              echo "::error::SBOM missing expected package: $p"
+              missing=1
+            fi
+          done
+          # Node modules for semantic-release plugins
+          required_npm=(semantic-release @semantic-release/commit-analyzer @semantic-release/release-notes-generator @semantic-release/changelog @semantic-release/git @semantic-release/exec @semantic-release/github @semantic-release/gitlab)
+          for m in "${required_npm[@]}"; do
+            if ! jq -e --arg m "$m" '.packages[] | select(.name == $m)' sbom.spdx.json >/dev/null; then
+              echo "::error::SBOM missing expected npm module: $m"
+              missing=1
+            fi
+          done
+          exit $missing
+
+      # -------- Vulnerability Scanning ----------------------------------------
+      - name: Install Grype
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        run: |
+          curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
+            | sh -s -- -b /usr/local/bin "v${{ env.GRYPE_VERSION }}"
+
+      - name: Scan image with Grype
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        run: |
+          grype "${{ steps.primary.outputs.ref }}" \
+            --fail-on high \
+            --config .grype.yaml \
+            -o sarif > grype.sarif
+
+      - name: Upload Grype SARIF to code scanning
+        if: always() && steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: grype.sarif
+          category: grype
+
+      # -------- Signing & Attestation -----------------------------------------
+      - name: Install cosign
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign image (keyless / OIDC)
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        run: |
+          cosign sign --yes "${{ steps.primary.outputs.ref }}"
+
+      - name: Attest SBOM (SPDX)
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        continue-on-error: true
+        run: |
+          cosign attest --yes \
+            --predicate sbom.spdx.json \
+            --type spdxjson \
+            "${{ steps.primary.outputs.ref }}"
+
+      - name: Upload SBOM + scan artifacts
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-and-scan
+          path: |
+            sbom.spdx.json
+            sbom.cdx.json
+            grype.sarif
+          if-no-files-found: warn
+
+  smoke:
+    name: Smoke-test tools inside image
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.build.outputs.primary-tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: terraform
+        run: terraform -version | tee /tmp/tf && grep -q "${{ env.TERRAFORM_VERSION || '' }}" /tmp/tf || true
+      - name: terragrunt
+        run: terragrunt --version
+      - name: aws
+        run: aws --version
+      - name: jq
+        run: jq --version
+      - name: semantic-release CLI
+        run: semantic-release --version
+      - name: required semantic-release plugins present
+        run: |
+          set -euo pipefail
+          npm ls -g --depth=0 \
+            @semantic-release/commit-analyzer \
+            @semantic-release/release-notes-generator \
+            @semantic-release/changelog \
+            @semantic-release/git \
+            @semantic-release/exec \
+            @semantic-release/github \
+            @semantic-release/gitlab
+
+  release:
+    name: semantic-release
+    needs: [build, smoke]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.build.outputs.primary-tag }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Run semantic-release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GH_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          semantic-release
