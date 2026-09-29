@@ -162,11 +162,11 @@ jobs:
 
       # -------- SBOM Generation -----------------------------------------------
       - name: Install Syft
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         uses: anchore/sbom-action/download-syft@v0
 
       - name: Generate SBOM (SPDX + CycloneDX)
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         run: |
           syft "${{ steps.primary.outputs.ref }}" \
             -o "spdx-json=sbom.spdx.json" \
@@ -175,7 +175,7 @@ jobs:
           jq '.packages | length' sbom.spdx.json
 
       - name: Validate SBOM content
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         run: |
           set -euo pipefail
           # SPDX JSON must be parseable and non-empty
@@ -203,13 +203,13 @@ jobs:
 
       # -------- Vulnerability Scanning ----------------------------------------
       - name: Install Grype
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         run: |
           curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh \
             | sh -s -- -b /usr/local/bin "v${{ env.GRYPE_VERSION }}"
 
       - name: Scan image with Grype
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         run: |
           grype "${{ steps.primary.outputs.ref }}" \
             --fail-on high \
@@ -217,7 +217,7 @@ jobs:
             -o sarif > grype.sarif
 
       - name: Upload Grype SARIF to code scanning
-        if: always() && github.event_name != 'pull_request'
+        if: always() && steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: grype.sarif
@@ -225,16 +225,16 @@ jobs:
 
       # -------- Signing & Attestation -----------------------------------------
       - name: Install cosign
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         uses: sigstore/cosign-installer@v3
 
       - name: Sign image (keyless / OIDC)
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         run: |
           cosign sign --yes "${{ steps.primary.outputs.ref }}"
 
       - name: Attest SBOM (SPDX)
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         continue-on-error: true
         run: |
           cosign attest --yes \
@@ -243,7 +243,7 @@ jobs:
             "${{ steps.primary.outputs.ref }}"
 
       - name: Upload SBOM + scan artifacts
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         uses: actions/upload-artifact@v4
         with:
           name: sbom-and-scan
