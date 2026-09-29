@@ -154,7 +154,7 @@ jobs:
 
       - name: Compute primary image ref (digest-pinned)
         id: primary
-        if: github.event_name != 'pull_request'
+        if: steps.tags.outputs.push == 'true' && github.event_name != 'pull_request'
         run: |
           # Extract first tag from comma-separated list
           FIRST_TAG=$(echo "${{ steps.tags.outputs.tags }}" | cut -d',' -f1)
