@@ -134,6 +134,11 @@ jobs:
             echo "platforms=linux/amd64" >> $GITHUB_OUTPUT
           fi
 
+      - name: Log into GHCR
+        if: steps.tags.outputs.push == 'true'
+        run: |
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+
       - name: Build Docker image with shared action
         id: build
         uses: ./github-actions/.github/actions/docker-buildx
