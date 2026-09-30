@@ -188,7 +188,7 @@ jobs:
           # Must list the apk-installed tools (terraform/terragrunt are
           # raw binaries so they may appear as binary-classifier entries
           # instead of spdx packages — verified in smoke job below).
-          required_pkgs=(aws-cli-2 jq nodejs-20 npm ca-certificates git bash)
+          required_pkgs=(aws-cli-2 jq nodejs-22 npm ca-certificates git bash)
           missing=0
           for p in "${required_pkgs[@]}"; do
             if ! jq -e --arg p "$p" '.packages[] | select(.name | ascii_downcase | startswith($p))' sbom.spdx.json >/dev/null; then
