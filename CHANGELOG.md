@@ -46,3 +46,4 @@
 ### Features
 
 * initial Wolfi-based CI toolchain image ([1506c50](https://github.com/hagzag/tools/commit/1506c5041e275101c7744f1545de3ce66ba06b5b))
+fix: test full security pipeline
