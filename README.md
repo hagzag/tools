@@ -118,3 +118,4 @@ task push         # multi-arch push to ghcr.io (needs GHCR_USER / GHCR_PAT or pr
 
 Requires: [Task](https://taskfile.dev), Docker (with buildx), and
 optionally `syft`, `grype`, `cosign`, `hadolint`, `yamllint`.
+
