@@ -57,3 +57,4 @@ jobs:
             @semantic-release/exec \
             @semantic-release/github \
             @semantic-release/gitlab
+
