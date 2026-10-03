@@ -99,6 +99,8 @@ jobs:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Check out shared actions (private repo, pinned SHA)
         uses: actions/checkout@v4
         with:
@@ -118,6 +120,7 @@ jobs:
         uses: ./.shared-actions/.github/actions/image-supply-chain
         with:
           image-ref: ${{ needs.build.outputs.ref }}
+          grype-config: .grype.yaml
           identity-regexp: '^https://github.com/hagzag/'
 
   smoke:
