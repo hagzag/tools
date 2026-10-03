@@ -115,7 +115,8 @@ RUN set -eux; \
 # --- semantic-release + required plugins --------------------------------
 # Installed globally so `semantic-release` is on PATH and plugins resolve
 # via the global node_modules directory.
-# Upgrade the apk-provided npm in place so its bundled dependencies are patched.
+# Upgrade apk npm in place; refresh brace-expansion bundled by both npm copies.
+# npm 11.21.0 still bundles 5.0.9; 5.0.12 fixes the later recursion advisories.
 # hadolint ignore=DL3016
 RUN set -eux; \
     npm install -g --prefix /usr --omit=dev --no-fund --no-audit "npm@${NPM_VERSION}"; \
@@ -129,6 +130,10 @@ RUN set -eux; \
       @semantic-release/exec \
       @semantic-release/github \
       @semantic-release/gitlab; \
+    npm install --prefix /tmp/npm-security-fixes --omit=dev --no-fund --no-audit brace-expansion@5.0.12; \
+    find /usr/lib/node_modules /usr/local/lib/node_modules -type d -path '*/node_modules/brace-expansion' \
+      -exec cp -a /tmp/npm-security-fixes/node_modules/brace-expansion/. {} \; ; \
+    rm -rf /tmp/npm-security-fixes; \
     npm cache clean --force; \
     semantic-release --version; \
     npm ls -g --depth=0
