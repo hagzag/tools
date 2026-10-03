@@ -15,3 +15,15 @@ ignore:
   - package:
       name: picomatch
       type: npm
+  # braces GHSA-vfj7-8cjw-p6xm - no patched release as of 2026-10-03.
+  # Latest npm release is 3.0.3; revisit when upstream publishes a fix.
+  - vulnerability: GHSA-vfj7-8cjw-p6xm
+    package:
+      name: braces
+      type: npm
+  # http-cache-semantics GHSA-ch52-4w7c-c8xp - no patched release as of 2026-10-03.
+  # Latest npm release is 4.2.0; revisit when upstream publishes a fix.
+  - vulnerability: GHSA-ch52-4w7c-c8xp
+    package:
+      name: http-cache-semantics
+      type: npm
