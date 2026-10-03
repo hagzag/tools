@@ -1,5 +1,11 @@
-name: Build & publish tools image (using shared workflow)
-# Calls docker-build-release from github-actions shared workflows
+name: Build & publish tools image (using shared composite actions)
+# hagzag/tools is PUBLIC; hagzag/github-actions is PRIVATE. GitHub does not allow
+# a public repo to call a private reusable workflow, so we check the private repo
+# out (pinned SHA, read-only token) and run its composite actions locally.
+#
+# Prerequisite (owner): Actions secret GH_TOKEN = fine-grained PAT, resource owner
+# hagzag, repository access ONLY hagzag/github-actions, permission Contents: read.
+# See https://github.com/hagzag/tools/issues/12
 
 on:
   push:
@@ -9,43 +15,130 @@ on:
     branches: [main]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ghcr.io/${{ github.repository }}
+  # Pinned commit of hagzag/github-actions that contains the composite actions.
+  # Bump via PR after reviewing the diff in the private repo.
+  GITHUB_ACTIONS_SHA: "d663bce20d7616f4023428dc664e56d3a74487c1"
+  # The supply-chain job runs in a prior published tools image (syft, grype, cosign baked in).
+  # `container.image` cannot read env, so it is set literally below; pin by digest via Renovate.
+
 jobs:
   build:
-    uses: hagzag/github-actions/.github/workflows/docker-build-release.yaml@main
-    with:
-      image-name: ghcr.io/${{ github.repository }}
-      dockerfile: Dockerfile
-      build-context: .
-      platforms: linux/amd64,linux/arm64
-      build-args: |
-        TERRAFORM_VERSION=1.14.8
-        TERRAGRUNT_VERSION=1.0.1
-        SEMANTIC_RELEASE_VERSION=24.2.3
-      registry-url: ghcr.io
-    secrets:
-      registry-token: ${{ secrets.GITHUB_TOKEN }}
-
-  smoke:
-    name: Smoke-test tools inside image
-    needs: build
-    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    name: Build image
+    # Secrets are not available to PRs from forks.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.build.outputs.ref }}
+      push: ${{ steps.meta.outputs.push }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check out shared actions (private repo, pinned SHA)
+        uses: actions/checkout@v4
+        with:
+          repository: hagzag/github-actions
+          ref: ${{ env.GITHUB_ACTIONS_SHA }}
+          path: .shared-actions
+          token: ${{ secrets.GH_TOKEN }}
+          persist-credentials: false
+
+      - name: Compute tags
+        id: meta
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short HEAD)"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            echo "tags=${IMAGE_NAME}:main,${IMAGE_NAME}:latest,${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build and push
+        id: build
+        uses: ./.shared-actions/.github/actions/docker-build-release
+        with:
+          image-name: ${{ env.IMAGE_NAME }}
+          tags: ${{ steps.meta.outputs.tags }}
+          push: ${{ steps.meta.outputs.push }}
+          registry-url: ${{ env.REGISTRY }}
+          registry-username: ${{ github.actor }}
+          registry-password: ${{ secrets.GITHUB_TOKEN }}
+          build-args: |
+            TERRAFORM_VERSION=1.14.8
+            TERRAGRUNT_VERSION=1.0.1
+            SEMANTIC_RELEASE_VERSION=24.2.3
+
+  supply-chain:
+    name: SBOM, scan, sign, verify
+    needs: build
+    if: needs.build.outputs.push == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+      id-token: write # cosign keyless signing
+      security-events: write
+    # Runs inside a previously published tools image: nothing is installed here.
+    # Bootstrap note: until an image containing syft/grype/cosign is published,
+    # the first run on main fails at "Check required tools"; re-run after it.
     container:
-      image: ghcr.io/${{ github.repository }}:main
+      image: ghcr.io/hagzag/tools:main # pin by digest, see SUPPLY_CHAIN_IMAGE note above
       credentials:
         username: ${{ github.actor }}
         password: ${{ secrets.GITHUB_TOKEN }}
     steps:
-      - name: terraform
-        run: terraform -version
-      - name: terragrunt
-        run: terragrunt --version
-      - name: aws
-        run: aws --version
-      - name: jq
-        run: jq --version
-      - name: semantic-release CLI
-        run: semantic-release --version
+      - name: Check out shared actions (private repo, pinned SHA)
+        uses: actions/checkout@v4
+        with:
+          repository: hagzag/github-actions
+          ref: ${{ env.GITHUB_ACTIONS_SHA }}
+          path: .shared-actions
+          token: ${{ secrets.GH_TOKEN }}
+          persist-credentials: false
+
+      - name: Log in to registry for cosign
+        run: |
+          mkdir -p "$HOME/.docker"
+          auth="$(printf '%s:%s' "${{ github.actor }}" "${{ secrets.GITHUB_TOKEN }}" | base64 -w0)"
+          printf '{"auths":{"ghcr.io":{"auth":"%s"}}}' "$auth" > "$HOME/.docker/config.json"
+
+      - name: SBOM, scan, sign, verify
+        uses: ./.shared-actions/.github/actions/image-supply-chain
+        with:
+          image-ref: ${{ needs.build.outputs.ref }}
+          identity-regexp: '^https://github.com/hagzag/'
+
+  smoke:
+    name: Smoke-test tools inside image
+    needs: [build, supply-chain]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    container:
+      image: ${{ needs.build.outputs.ref }}
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - run: terraform -version
+      - run: terragrunt --version
+      - run: aws --version
+      - run: jq --version
+      - run: syft version
+      - run: grype version
+      - run: cosign version
+      - run: semantic-release --version
       - name: required semantic-release plugins present
         run: |
           set -euo pipefail
@@ -57,4 +150,3 @@ jobs:
             @semantic-release/exec \
             @semantic-release/github \
             @semantic-release/gitlab
-

@@ -15,6 +15,9 @@ ARG TERRAFORM_VERSION
 ARG TERRAGRUNT_VERSION
 ARG NODE_MAJOR=22
 ARG SEMANTIC_RELEASE_VERSION=24.2.3
+ARG SYFT_VERSION=1.51.1
+ARG GRYPE_VERSION=0.111.0
+ARG COSIGN_VERSION=3.1.3
 
 SHELL ["/bin/sh", "-eu", "-o", "pipefail", "-c"]
 # hadolint ignore=DL3002
@@ -77,6 +80,37 @@ RUN set -eux; \
     rm -f /tmp/tg.sha; \
     terragrunt --version
 
+# --- Supply-chain tools: syft, grype, cosign ------------------------------
+# Baked in (pinned + checksum-verified) so CI never installs them at build time.
+# The pipeline's SBOM / scan / sign / verify stage runs inside this image.
+# hadolint ignore=DL3003,DL4006
+RUN set -eux; \
+    arch="${TARGETARCH:-amd64}"; \
+    case "${arch}" in amd64|arm64) ;; *) echo "unsupported arch: ${arch}" >&2; exit 1 ;; esac; \
+    # syft
+    base="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"; \
+    curl -fsSL -o /tmp/syft.tgz "${base}/syft_${SYFT_VERSION}_linux_${arch}.tar.gz"; \
+    curl -fsSL -o /tmp/syft.sha "${base}/syft_${SYFT_VERSION}_checksums.txt"; \
+    (cd /tmp && grep " syft_${SYFT_VERSION}_linux_${arch}.tar.gz\$" syft.sha | sed 's/ [^ ]*$/ syft.tgz/' | sha256sum -c -); \
+    tar -xzf /tmp/syft.tgz -C /usr/local/bin syft; \
+    # (cd /tmp && grep " syft_${SYFT_VERSION}_linux_${arch}.tar.gz\$" syft.sha | sha256sum -c -); \
+    # grype
+    base="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}"; \
+    curl -fsSL -o /tmp/grype.tgz "${base}/grype_${GRYPE_VERSION}_linux_${arch}.tar.gz"; \
+    curl -fsSL -o /tmp/grype.sha "${base}/grype_${GRYPE_VERSION}_checksums.txt"; \
+    (cd /tmp && grep " grype_${GRYPE_VERSION}_linux_${arch}.tar.gz\$" grype.sha | sed 's/ [^ ]*$/ grype.tgz/' | sha256sum -c -); \
+    tar -xzf /tmp/grype.tgz -C /usr/local/bin grype; \
+    # (cd /tmp && grep " grype_${GRYPE_VERSION}_linux_${arch}.tar.gz\$" grype.sha | sha256sum -c -); \
+    # cosign
+    base="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"; \
+    curl -fsSL -o /tmp/cosign-linux-${arch} "${base}/cosign-linux-${arch}"; \
+    curl -fsSL -o /tmp/cosign.sha "${base}/cosign_checksums.txt"; \
+    (cd /tmp && grep " cosign-linux-${arch}\$" cosign.sha | sha256sum -c -); \
+    install -m 0755 /tmp/cosign-linux-${arch} /usr/local/bin/cosign; \
+    chmod +x /usr/local/bin/syft /usr/local/bin/grype; \
+    rm -f /tmp/syft.* /tmp/grype.* /tmp/cosign*; \
+    syft version; grype version; cosign version
+
 # --- semantic-release + required plugins --------------------------------
 # Installed globally so `semantic-release` is on PATH and plugins resolve
 # via the global node_modules directory.
@@ -98,12 +132,15 @@ RUN set -eux; \
 
 # --- OCI labels (populated further by workflow via --label) --------------
 LABEL org.opencontainers.image.source="https://github.com/hagzag/tools" \
-      org.opencontainers.image.description="Wolfi-based CI image: terraform, terragrunt, aws-cli v2, jq, semantic-release (+ changelog/git/exec/github/gitlab plugins)" \
+      org.opencontainers.image.description="Wolfi-based CI image: terraform, terragrunt, aws-cli v2, jq, syft, grype, cosign, semantic-release (+ changelog/git/exec/github/gitlab plugins)" \
       org.opencontainers.image.licenses="MIT" \
       org.opencontainers.image.vendor="hagzag" \
       io.hagzag.tools.terraform="${TERRAFORM_VERSION}" \
       io.hagzag.tools.terragrunt="${TERRAGRUNT_VERSION}" \
-      io.hagzag.tools.semantic-release="${SEMANTIC_RELEASE_VERSION}"
+      io.hagzag.tools.semantic-release="${SEMANTIC_RELEASE_VERSION}" \
+      io.hagzag.tools.syft="${SYFT_VERSION}" \
+      io.hagzag.tools.grype="${GRYPE_VERSION}" \
+      io.hagzag.tools.cosign="${COSIGN_VERSION}"
 
 WORKDIR /work
 
