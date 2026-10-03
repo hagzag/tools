@@ -91,14 +91,16 @@ RUN set -eux; \
     base="https://github.com/anchore/syft/releases/download/v${SYFT_VERSION}"; \
     curl -fsSL -o /tmp/syft.tgz "${base}/syft_${SYFT_VERSION}_linux_${arch}.tar.gz"; \
     curl -fsSL -o /tmp/syft.sha "${base}/syft_${SYFT_VERSION}_checksums.txt"; \
-    (cd /tmp && grep " syft_${SYFT_VERSION}_linux_${arch}.tar.gz\$" syft.sha | sha256sum -c -); \
+    (cd /tmp && grep " syft_${SYFT_VERSION}linux${arch}.tar.gz\$" syft.sha | sed 's/ [^ ]*$/ syft.tgz/' | sha256sum -c -);
     tar -xzf /tmp/syft.tgz -C /usr/local/bin syft; \
+    # (cd /tmp && grep " syft_${SYFT_VERSION}_linux_${arch}.tar.gz\$" syft.sha | sha256sum -c -); \
     # grype
     base="https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}"; \
     curl -fsSL -o /tmp/grype.tgz "${base}/grype_${GRYPE_VERSION}_linux_${arch}.tar.gz"; \
     curl -fsSL -o /tmp/grype.sha "${base}/grype_${GRYPE_VERSION}_checksums.txt"; \
-    (cd /tmp && grep " grype_${GRYPE_VERSION}_linux_${arch}.tar.gz\$" grype.sha | sha256sum -c -); \
+    (cd /tmp && grep " grype_${GRYPE_VERSION}linux${arch}.tar.gz\$" grype.sha | sed 's/ [^ ]*$/ grype.tgz/' | sha256sum -c -); \
     tar -xzf /tmp/grype.tgz -C /usr/local/bin grype; \
+    # (cd /tmp && grep " grype_${GRYPE_VERSION}_linux_${arch}.tar.gz\$" grype.sha | sha256sum -c -); \
     # cosign
     base="https://github.com/sigstore/cosign/releases/download/v${COSIGN_VERSION}"; \
     curl -fsSL -o /tmp/cosign-linux-${arch} "${base}/cosign-linux-${arch}"; \
