@@ -14,7 +14,8 @@ ARG TARGETARCH
 ARG TERRAFORM_VERSION
 ARG TERRAGRUNT_VERSION
 ARG NODE_MAJOR=22
-ARG SEMANTIC_RELEASE_VERSION=24.2.3
+ARG SEMANTIC_RELEASE_VERSION=25.0.9
+ARG NPM_VERSION=11.21.0
 ARG SYFT_VERSION=1.51.1
 ARG GRYPE_VERSION=0.111.0
 ARG COSIGN_VERSION=3.1.3
@@ -25,7 +26,7 @@ USER root
 
 # --- OS packages ---------------------------------------------------------
 # aws-cli-v2  -> full AWS CLI v2
-# nodejs-20+npm -> runtime for semantic-release
+# nodejs-22+npm -> runtime for semantic-release
 # jq / git / bash / curl / unzip / ca-certs -> table-stakes
 # hadolint ignore=DL3018
 RUN apk add --no-cache \
@@ -114,8 +115,10 @@ RUN set -eux; \
 # --- semantic-release + required plugins --------------------------------
 # Installed globally so `semantic-release` is on PATH and plugins resolve
 # via the global node_modules directory.
+# Upgrade the apk-provided npm in place so its bundled dependencies are patched.
 # hadolint ignore=DL3016
 RUN set -eux; \
+    npm install -g --prefix /usr --omit=dev --no-fund --no-audit "npm@${NPM_VERSION}"; \
     npm config set update-notifier false; \
     npm install -g --omit=dev --no-fund --no-audit \
       "semantic-release@${SEMANTIC_RELEASE_VERSION}" \
