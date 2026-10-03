@@ -29,17 +29,54 @@ env:
   # `container.image` cannot read env, so it is set literally below; pin by digest via Renovate.
 
 jobs:
-  build:
-    name: Build image
+  meta:
+    name: Compute tags
     # Secrets are not available to PRs from forks.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      packages: write
     outputs:
-      ref: ${{ steps.build.outputs.ref }}
+      tags: ${{ steps.meta.outputs.tags }}
       push: ${{ steps.meta.outputs.push }}
+      short_sha: ${{ steps.meta.outputs.short_sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute tags
+        id: meta
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short HEAD)"
+          echo "short_sha=${short_sha}" >> "$GITHUB_OUTPUT"
+          if [ "${GITHUB_REF}" = "refs/heads/main" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
+            echo "tags=${IMAGE_NAME}:main,${IMAGE_NAME}:latest,${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "push=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
+            echo "push=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Each architecture builds natively on its own runner (no QEMU emulation:
+  # node/npm crash with SIGILL under QEMU on arm64). Per-arch images are pushed
+  # under arch-suffixed tags and merged into one multi-arch index by `build`.
+  build-arch:
+    name: Build image (${{ matrix.arch }})
+    needs: meta
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            platform: linux/amd64
+            runner: ubuntu-latest
+          - arch: arm64
+            platform: linux/arm64
+            runner: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -52,26 +89,21 @@ jobs:
           token: ${{ secrets.GH_TOKEN }}
           persist-credentials: false
 
-      - name: Compute tags
-        id: meta
+      - name: Arch-suffixed tags
+        id: arch_tags
         run: |
           set -euo pipefail
-          short_sha="$(git rev-parse --short HEAD)"
-          if [ "${GITHUB_REF}" = "refs/heads/main" ] && [ "${GITHUB_EVENT_NAME}" = "push" ]; then
-            echo "tags=${IMAGE_NAME}:main,${IMAGE_NAME}:latest,${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
-            echo "push=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "tags=${IMAGE_NAME}:sha-${short_sha}" >> "$GITHUB_OUTPUT"
-            echo "push=false" >> "$GITHUB_OUTPUT"
-          fi
+          # Per-arch tags only; the final tags are applied by the merge job.
+          echo "tags=${IMAGE_NAME}:sha-${{ needs.meta.outputs.short_sha }}-${{ matrix.arch }}" >> "$GITHUB_OUTPUT"
 
       - name: Build and push
         id: build
         uses: ./.shared-actions/.github/actions/docker-build-release
         with:
           image-name: ${{ env.IMAGE_NAME }}
-          tags: ${{ steps.meta.outputs.tags }}
-          push: ${{ steps.meta.outputs.push }}
+          tags: ${{ steps.arch_tags.outputs.tags }}
+          push: ${{ needs.meta.outputs.push }}
+          platforms: ${{ matrix.platform }}
           registry-url: ${{ env.REGISTRY }}
           registry-username: ${{ github.actor }}
           registry-password: ${{ secrets.GITHUB_TOKEN }}
@@ -79,6 +111,70 @@ jobs:
             TERRAFORM_VERSION=1.14.8
             TERRAGRUNT_VERSION=1.0.1
             SEMANTIC_RELEASE_VERSION=25.0.9
+
+      - name: Record digest
+        run: |
+          mkdir -p digests
+          echo "${{ steps.build.outputs.digest }}" > "digests/${{ matrix.arch }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: digest-${{ matrix.arch }}
+          path: digests/${{ matrix.arch }}
+          if-no-files-found: error
+          retention-days: 1
+
+  build:
+    name: Build image
+    needs: [meta, build-arch]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      ref: ${{ steps.index.outputs.ref }}
+      push: ${{ needs.meta.outputs.push }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: digest-*
+          path: digests
+          merge-multiple: true
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to registry
+        if: needs.meta.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Merge per-arch images into one multi-arch index
+        id: index
+        env:
+          TAGS: ${{ needs.meta.outputs.tags }}
+          PUSH: ${{ needs.meta.outputs.push }}
+        run: |
+          set -euo pipefail
+          amd64="$(cat digests/amd64)"
+          arm64="$(cat digests/arm64)"
+          echo "amd64=${amd64} arm64=${arm64}"
+          if [ "${PUSH}" != "true" ]; then
+            echo "push=false: both native legs built; nothing to merge."
+            exit 0
+          fi
+          args=()
+          IFS=',' read -ra tag_list <<< "${TAGS}"
+          for t in "${tag_list[@]}"; do args+=(-t "$t"); done
+          docker buildx imagetools create "${args[@]}" \
+            "${IMAGE_NAME}@${amd64}" "${IMAGE_NAME}@${arm64}"
+          first="${tag_list[0]}"
+          digest="$(docker buildx imagetools inspect "$first" --format '{{json .Manifest}}' | jq -r .digest)"
+          echo "ref=${IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
+          echo "Multi-arch index: ${IMAGE_NAME}@${digest}"
+          docker buildx imagetools inspect "${IMAGE_NAME}@${digest}"
 
   supply-chain:
     name: SBOM, scan, sign, verify
