@@ -24,7 +24,7 @@ env:
   IMAGE_NAME: ghcr.io/${{ github.repository }}
   # Pinned commit of hagzag/github-actions that contains the composite actions.
   # Bump via PR after reviewing the diff in the private repo.
-  GITHUB_ACTIONS_SHA: "REPLACE_WITH_MERGE_COMMIT_SHA_OF_github-actions_PR"
+  GITHUB_ACTIONS_SHA: "d663bce20d7616f4023428dc664e56d3a74487c1"
   # The supply-chain job runs in a prior published tools image (syft, grype, cosign baked in).
   # `container.image` cannot read env, so it is set literally below; pin by digest via Renovate.
 
